@@ -5,6 +5,7 @@ import { createTrackDivs } from "./TrackUI.js"
 import { getCurrentSong, getPlayer } from "../player/Player.js"
 import { SongUI } from "./SongUI.js"
 import { getMidiHandler } from "../MidiInputHandler.js"
+import { Notification } from "./Notification.js"
 /**
  * Contains all initiation, appending and manipulation of DOM-elements.
  * Callback-bindings for some events are created in  the constructor
@@ -762,19 +763,66 @@ export class UI {
 			)
 			this.midiSetupDialog.appendChild(text)
 
+			this.bluetoothDiv = DomHelper.createDiv({
+				display: "flex",
+				alignItems: "center",
+				justifyContent: "flex-start",
+				gap: "0.5em",
+				marginBottom: "0.5em",
+				flexWrap: "wrap"
+			})
 			this.inputDevicesDiv = DomHelper.createDivWithClass("halfContainer")
 			this.outputDevicesDiv = DomHelper.createDivWithClass("halfContainer")
+			this.midiSetupDialog.appendChild(this.bluetoothDiv)
 			this.midiSetupDialog.appendChild(this.inputDevicesDiv)
 			this.midiSetupDialog.appendChild(this.outputDevicesDiv)
+
+			// Devices come and go on their own - a Bluetooth keyboard switching off,
+			// a re-pairing creating a new port, an automatic reconnection getting
+			// through. Redraw instead of leaving the dialog showing a stale list the
+			// user would have to close and reopen to get rid of.
+			getMidiHandler().setDeviceChangeCallback(
+				this.refreshMidiSetupDialog.bind(this)
+			)
 		}
+		this.refreshMidiSetupDialog()
+		this.midiSetupDialog.style.marginTop =
+			this.getNavBar().clientHeight + 25 + "px"
+		return this.midiSetupDialog
+	}
+	refreshMidiSetupDialog() {
+		if (!this.midiSetupDialog) {
+			return
+		}
+		this.refreshBluetoothDiv()
+
 		let inputDevices = getMidiHandler().getAvailableInputDevices()
+		this.inputDevicesDiv.innerHTML = ""
+		let inputHeader = DomHelper.createDiv({
+			display: "flex",
+			alignItems: "center",
+			justifyContent: "flex-start",
+			gap: "0.5em"
+		})
+		let inputTitle = DomHelper.createElement("span")
+		inputTitle.innerHTML = "Input: "
+		inputHeader.appendChild(inputTitle)
+		// Re-scanning by hand: the browser normally reports (un)plugging through
+		// `onstatechange`, but that event does get lost with Bluetooth. Without
+		// this button, purging the ghost ports means reloading the page.
+		let refreshButton = DomHelper.createGlyphiconButton(
+			"midiInputRefresh",
+			"refresh",
+			() => this.refreshMidiSetupDialog()
+		)
+		refreshButton.title = "Re-scan the MIDI inputs (drops the unplugged ones)"
+		inputHeader.appendChild(refreshButton)
+		this.inputDevicesDiv.appendChild(inputHeader)
 		if (inputDevices.length == 0) {
-			this.inputDevicesDiv.innerHTML = "No MIDI input-devices found."
+			let noneFound = DomHelper.createElementWithClass("row", "span")
+			noneFound.innerHTML = "No MIDI input-devices found."
+			this.inputDevicesDiv.appendChild(noneFound)
 		} else {
-			this.inputDevicesDiv.innerHTML = ""
-			let inputTitle = DomHelper.createElementWithClass("row", "span")
-			inputTitle.innerHTML = "Input: "
-			this.inputDevicesDiv.appendChild(inputTitle)
 			inputDevices.forEach(device => {
 				this.inputDevicesDiv.appendChild(this.createDeviceDiv(device))
 			})
@@ -792,9 +840,72 @@ export class UI {
 				this.outputDevicesDiv.appendChild(this.createOutputDeviceDiv(device))
 			})
 		}
-		this.midiSetupDialog.style.marginTop =
-			this.getNavBar().clientHeight + 25 + "px"
-		return this.midiSetupDialog
+	}
+	/**
+	 * Direct Bluetooth connection. On Android (and on Linux) a BLE-MIDI keyboard
+	 * never shows up in the Web MIDI list above: the page has to open the GATT
+	 * connection itself, and `requestDevice` only works from a user gesture -
+	 * hence this button.
+	 */
+	refreshBluetoothDiv() {
+		let midiHandler = getMidiHandler()
+		this.bluetoothDiv.innerHTML = ""
+		if (!midiHandler.isBluetoothSupported()) {
+			return
+		}
+
+		let title = DomHelper.createElement("span")
+		title.innerHTML = "Bluetooth: "
+		this.bluetoothDiv.appendChild(title)
+
+		if (midiHandler.isBluetoothConnected()) {
+			let connected = DomHelper.createElement("span")
+			connected.innerHTML = midiHandler.getBluetoothDeviceName()
+			this.bluetoothDiv.appendChild(connected)
+			this.bluetoothDiv.appendChild(
+				DomHelper.createTextButton("bluetoothDisconnect", "Disconnect", () =>
+					midiHandler.disconnectBluetoothMidi()
+				)
+			)
+		} else if (midiHandler.isBluetoothReconnecting()) {
+			let reconnecting = DomHelper.createElement("span")
+			reconnecting.innerHTML =
+				"Reconnecting to " + midiHandler.getBluetoothDeviceName() + "…"
+			this.bluetoothDiv.appendChild(reconnecting)
+		} else {
+			if (midiHandler.hasBluetoothDevice()) {
+				// The permission survives a dropout: getting the keyboard back needs
+				// no second trip through the chooser.
+				this.bluetoothDiv.appendChild(
+					DomHelper.createTextButton("bluetoothReconnect", "Reconnect", () =>
+						midiHandler.reconnectBluetoothMidi()
+					)
+				)
+			}
+			this.bluetoothDiv.appendChild(
+				DomHelper.createTextButton(
+					"bluetoothConnect",
+					"Connect Bluetooth keyboard",
+					() =>
+						midiHandler
+							.connectBluetoothMidi()
+							.catch(e =>
+								Notification.create(
+									e && e.message
+										? e.message
+										: "Could not connect the Bluetooth keyboard.",
+									5000
+								)
+							)
+				)
+			)
+		}
+
+		if (midiHandler.getBluetoothError()) {
+			let error = DomHelper.createElement("span")
+			error.innerHTML = midiHandler.getBluetoothError()
+			this.bluetoothDiv.appendChild(error)
+		}
 	}
 	createDeviceDiv(device) {
 		let deviceDiv = DomHelper.createTextButton(
